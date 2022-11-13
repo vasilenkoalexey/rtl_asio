@@ -23,7 +23,6 @@
 #include <array>
 #include <charconv>
 #include <iostream>
-#include <semaphore>
 #include <thread>
 
 #include <signal.h>
