@@ -87,6 +87,8 @@ else(ENABLE_ZEROCOPY)
   )
 endif(ENABLE_ZEROCOPY)
 
+SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
+
 add_executable(
   rtl_asio
   rtl_asio.cpp
