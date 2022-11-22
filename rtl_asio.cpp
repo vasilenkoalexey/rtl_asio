@@ -124,6 +124,19 @@ static double atofs(const std::string_view& value) {
     return suff * res;
 }
 
+int get_string_descriptor(int pos, uint8_t* data, char* str) {
+    int len, i, j = 0;
+    len = data[pos];
+    if (data[pos + 1] != 0x03) {
+        std::cout << "Error: invalid string descriptor!" << std::endl;
+    }
+    for (i = 2; i < len; i += 2) {
+        str[j++] = data[pos + i];
+    }
+    str[j] = 0x00;
+    return pos + i;
+}
+
 void rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
     (*static_cast<std::function<void(const unsigned char*, const uint32_t)>*>(ctx))(buf, len);
 }
@@ -204,6 +217,55 @@ int main(int argc, char* argv[]) {
     }
 
     rtlsdr_dev_t* dev = nullptr;
+
+    int r = rtlsdr_open(&dev, dev_index);
+    if (r < 0) {
+        std::cout << "Failed to open rtlsdr device #" << dev_index <<  "." << std::endl;
+        return 0;
+    }
+
+    std::array<uint8_t, 256> eeprom_buf;
+    r = rtlsdr_read_eeprom(dev, eeprom_buf.data(), 0, 256);
+	if (r < 0) {
+		if (r == -3) {
+            std::cout << "No EEPROM has been found." << std::endl;
+        } else {
+            std::cout << "Failed to read EEPROM, err " << r << "." << std::endl;
+        }
+        std::cout << "Close rtlsdr device #" << dev_index << "." << std::endl;
+        rtlsdr_close(dev);
+        return 0;
+	}
+
+	if ((eeprom_buf.at(0) != 0x28) || (eeprom_buf.at(1) != 0x32)) {
+		std::cout << "Error: invalid RTL2832 EEPROM header!" << std::endl;
+    } else {
+        const uint16_t vendor_id = eeprom_buf.at(2) | (eeprom_buf.at(3) << 8);
+        const uint16_t product_id = eeprom_buf.at(4) | (eeprom_buf.at(5) << 8);
+        const int have_serial = (eeprom_buf.at(6) == 0xa5) ? 1 : 0;
+        const bool direct_sampling_on = (eeprom_buf.at(7) & 0x01);
+        const bool enable_bt = (eeprom_buf.at(7) & 0x02);
+
+        std::array<char, 256> manufacturer;
+        int pos = get_string_descriptor(0x09, eeprom_buf.data(), manufacturer.data());
+        std::array<char, 256> product;    
+        pos = get_string_descriptor(pos, eeprom_buf.data(), product.data());
+        std::array<char, 256> serial;    
+        get_string_descriptor(pos, eeprom_buf.data(), serial.data());
+
+        std::cout << "Vendor ID:\t\t\t0x" << std::hex << vendor_id  << std::endl;
+        std::cout << "Product ID:\t\t\t0x" << std::hex << product_id  << std::endl;    
+        std::cout << "Manufacturer:\t\t\t" << manufacturer.data() << std::endl;    
+        std::cout << "Product:\t\t\t" << product.data() << std::endl;    
+        std::cout << "Serial number:\t\t\t" << serial.data() << std::endl;    
+        std::cout << "Serial number enabled:\t\t" << (have_serial ? "yes": "no") << std::endl;
+        std::cout << "Bias-T Always ON:\t\t" << (enable_bt ? "no": "yes") << std::endl;
+        std::cout << "Direct Sampling Always ON:\t" << (direct_sampling_on ? "yes": "no") << std::endl;
+        std::cout << std::dec;
+    }
+    
+    std::cout << "Close rtlsdr device #" << dev_index << "." << std::endl;
+    rtlsdr_close(dev);
 
     asio::io_context io_context;
     asio::ip::tcp::socket rtl_socket{io_context};

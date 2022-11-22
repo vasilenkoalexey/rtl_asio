@@ -5,6 +5,7 @@
  * Rewritten on modern C++20.
  * Uses incredible standalone [asio](https://think-async.com/Asio/) library for communcation and signals handling.
  * Fully compatible with existing ```rtl_tcp``` clients, also command line options (except ```-n```) same as for original ```rtl_tcp```. 
+ * Print EEPROM info at run.
  * Dongle starts only after client connects and completely stops when client disconnects.
  * No slow stuff (memory allocation/mutexes/linked lists/ring buffers etc.) during I/Q data sending.
  * Depends only on [libusb](https://github.com/libusb/libusb) library.
@@ -15,7 +16,10 @@
 To build the project execute the following commands:
 
 ```
-sudo apt-get install libusb-1.0-0-dev
+apt-get install libusb-1.0-0-dev
+git clone https://github.com/vasilenkoalexey/rtl_asio.git
+cd rtl_asio
+git submodule update --init --recursive
 mkdir build
 cd build
 cmake ..
