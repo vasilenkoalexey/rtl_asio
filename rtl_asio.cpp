@@ -124,17 +124,17 @@ static double atofs(const std::string_view& value) {
     return suff * res;
 }
 
-int get_string_descriptor(int pos, uint8_t *data, char *str) {
-	int len, i, j = 0;
-	len = data[pos];
+int get_string_descriptor(int pos, uint8_t* data, char* str) {
+    int len, i, j = 0;
+    len = data[pos];
     if (data[pos + 1] != 0x03) {
         std::cout << "Error: invalid string descriptor!" << std::endl;
     }
     for (i = 2; i < len; i += 2) {
-		str[j++] = data[pos + i];
+        str[j++] = data[pos + i];
     }
-	str[j] = 0x00;
-	return pos + i;
+    str[j] = 0x00;
+    return pos + i;
 }
 
 void rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
