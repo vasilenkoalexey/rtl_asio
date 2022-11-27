@@ -1,13 +1,41 @@
-cmake_minimum_required(VERSION 3.8)
+cmake_minimum_required(VERSION 3.11)
 project("rtl_asio")
+
+include(FetchContent)
+
+FetchContent_Declare(
+  asio
+  GIT_REPOSITORY https://github.com/chriskohlhoff/asio
+  GIT_PROGRESS TRUE
+  GIT_SHALLOW TRUE
+  GIT_TAG origin/master)
+
+if(NOT asio_POPULATED)
+  FetchContent_Populate(asio)
+  set(ASIO_STANDALONE
+      ON
+      CACHE BOOL "" FORCE)
+  set(ASIO_HEADER_ONLY
+      ON
+      CACHE BOOL "" FORCE)
+endif()
+
+FetchContent_Declare(
+  rtl_sdr
+  GIT_REPOSITORY https://gitea.osmocom.org/sdr/rtl-sdr/
+  GIT_PROGRESS TRUE
+  GIT_SHALLOW TRUE
+  GIT_TAG origin/master)
+
+if(NOT rtl_sdr_POPULATED)
+  FetchContent_Populate(rtl_sdr)
+endif()
 
 # select the release build type by default to get optimization flags
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE "Release")
   message(STATUS "Build type not specified: defaulting to release.")
 endif(NOT CMAKE_BUILD_TYPE)
-
-set(RTL rtl-sdr)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -92,15 +120,14 @@ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -pthread")
 add_executable(
   rtl_asio
   rtl_asio.cpp
-  ${RTL}/src/librtlsdr.c
-  ${RTL}/src/tuner_e4k.c
-  ${RTL}/src/tuner_fc0012.c
-  ${RTL}/src/tuner_fc0013.c
-  ${RTL}/src/tuner_fc2580.c
-  ${RTL}/src/tuner_r82xx.c)
+  ${rtl_sdr_SOURCE_DIR}/src/librtlsdr.c
+  ${rtl_sdr_SOURCE_DIR}/src/tuner_e4k.c
+  ${rtl_sdr_SOURCE_DIR}/src/tuner_fc0012.c
+  ${rtl_sdr_SOURCE_DIR}/src/tuner_fc0013.c
+  ${rtl_sdr_SOURCE_DIR}/src/tuner_fc2580.c
+  ${rtl_sdr_SOURCE_DIR}/src/tuner_r82xx.c)
 
 target_link_libraries(rtl_asio ${LIBUSB_LIBRARIES} ${THREADS_PTHREADS_LIBRARY})
 include_directories(
-  ${PROJECT_SOURCE_DIR}/asio/asio/include ${PROJECT_SOURCE_DIR}/${RTL}/include
-  ${LIBUSB_INCLUDE_DIRS} ${THREADS_PTHREADS_INCLUDE_DIR}
-  ${PROJECT_SOURCE_DIR}/${RTL}/src)
+  ${asio_SOURCE_DIR}/asio/include ${rtl_sdr_SOURCE_DIR}/include
+  ${LIBUSB_INCLUDE_DIRS} ${THREADS_PTHREADS_INCLUDE_DIR})
