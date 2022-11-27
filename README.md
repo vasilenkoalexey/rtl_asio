@@ -1,4 +1,5 @@
-```rtl_asio``` - fast and simple I/Q spectrum single-client server for RTL2832 based DVB-T receivers.
+# rtl_asio [![Build Status](https://github.com/vasilenkoalexey/rtl_asio/actions/workflows/cmake.yml/badge.svg)](https://github.com/vasilenkoalexey/rtl_asio/actions)
+Fast and simple I/Q spectrum single-client server for RTL2832 based DVB-T receivers.
 
 ## Features
 
@@ -19,7 +20,6 @@ To build the project execute the following commands:
 apt-get install libusb-1.0-0-dev
 git clone https://github.com/vasilenkoalexey/rtl_asio.git
 cd rtl_asio
-git submodule update --init --recursive
 mkdir build
 cd build
 cmake ..
