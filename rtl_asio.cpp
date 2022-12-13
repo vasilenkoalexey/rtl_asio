@@ -24,6 +24,7 @@
 #include <charconv>
 #include <iostream>
 #include <thread>
+#include <optional>
 
 #include <signal.h>
 
@@ -32,82 +33,62 @@
 extern "C" {
 #include "rtl-sdr.h"
 }
+#define DEFAULT_BUF_LENGTH	(16 * 32 * 512)
 
 static int set_gain_by_index(rtlsdr_dev_t* dev, const unsigned int index) {
-    int res = 0;
-    int count = rtlsdr_get_tuner_gains(dev, NULL);
-    if (count > 0 && static_cast<unsigned int>(count) > index) {
+    if (int count = rtlsdr_get_tuner_gains(dev, nullptr); count > 0 && static_cast<unsigned int>(count) > index) {
         const auto gains(std::make_unique<int[]>(count));
         count = rtlsdr_get_tuner_gains(dev, gains.get());
-        res = rtlsdr_set_tuner_gain(dev, gains[index]);
+        return rtlsdr_set_tuner_gain(dev, gains[index]);
     }
-    return res;
+    return 0;
 }
 
-static int verbose_device_search(const char* s) {
-    int i;
-    char* s2;
+static std::optional<uint32_t> verbose_device_search(const std::string_view s) {
     char vendor[256], product[256], serial[256];
-    const int device_count = rtlsdr_get_device_count();
+    const uint32_t device_count = rtlsdr_get_device_count();
     if (!device_count) {
         std::cout << "No supported devices found." << std::endl;
-        return -1;
+        return std::nullopt;
     }
     std::cout << "Found " << device_count << " device(s):" << std::endl;
-    for (i = 0; i < device_count; i++) {
-        rtlsdr_get_device_usb_strings(i, vendor, product, serial);
-        std::cout << "  " << i << ":  " << vendor << ", " << product << ", SN: " << serial << std::endl;
+    uint32_t device;
+    for (device = 0; device < device_count; device++) {
+        rtlsdr_get_device_usb_strings(device, vendor, product, serial);
+        std::cout << "  " << device << ":  " << vendor << ", " << product << ", SN: " << serial << std::endl;
     }
     std::cout << std::endl;
     /* does string look like raw id number */
-    int device = (int)strtol(s, &s2, 0);
-    if (s2[0] == '\0' && device >= 0 && device < device_count) {
-        std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(static_cast<uint32_t>(device)) << std::endl;
+    auto [ptr, ec] = std::from_chars(s.data(), s.data() + s.size(), device);
+    if (ec == std::errc() && device < device_count) {
+        std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(device) << std::endl;
         return device;
     }
     /* does string exact match a serial */
-    for (i = 0; i < device_count; i++) {
-        rtlsdr_get_device_usb_strings(i, vendor, product, serial);
-        if (strcmp(s, serial) != 0) {
-            continue;
+    for (device = 0; device < device_count; device++) {
+        rtlsdr_get_device_usb_strings(device, vendor, product, serial);
+        if(std::string(serial) == s) {
+            std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(device) << std::endl;
+            return device;
         }
-        device = i;
-        std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(static_cast<uint32_t>(device)) << std::endl;
-        return device;
     }
-    /* does string prefix match a serial */
-    for (i = 0; i < device_count; i++) {
-        rtlsdr_get_device_usb_strings(i, vendor, product, serial);
-        if (strncmp(s, serial, strlen(s)) != 0) {
-            continue;
+    /* does string prefix or suffix match a serial */    
+    for (device = 0; device < device_count; device++) {
+        rtlsdr_get_device_usb_strings(device, vendor, product, serial);
+        if(std::string(serial).find(s) != std::string::npos) {
+            std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(device) << std::endl;
+            return device;
         }
-        device = i;
-        std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(static_cast<uint32_t>(device)) << std::endl;
-        return device;
-    }
-    /* does string suffix match a serial */
-    for (i = 0; i < device_count; i++) {
-        rtlsdr_get_device_usb_strings(i, vendor, product, serial);
-        const int offset = strlen(serial) - strlen(s);
-        if (offset < 0) {
-            continue;
-        }
-        if (strncmp(s, serial + offset, strlen(s)) != 0) {
-            continue;
-        }
-        device = i;
-        std::cout << "Using device " << device << ": " << rtlsdr_get_device_name(static_cast<uint32_t>(device)) << std::endl;
-        return device;
-    }
+    }    
     std::cout << "No matching devices found." << std::endl;
-    return -1;
+    return std::nullopt;
 }
 
 /* standard suffixes */
-static double atofs(const std::string_view& value) {
+static double atofs(const std::string_view s) {
     double suff = 1.0;
     double res = 0.0;
-    switch (value.back()) {
+    switch (s.back()) {
         case 'g':
         case 'G':
             suff *= 1e3;
@@ -120,20 +101,20 @@ static double atofs(const std::string_view& value) {
         case 'K':
             suff *= 1e3;
     }
-    std::from_chars(value.data(), value.data() + value.size(), res);
+    std::from_chars(s.data(), s.data() + s.size(), res);
     return suff * res;
 }
 
-int get_string_descriptor(int pos, uint8_t* data, char* str) {
-    int len, i, j = 0;
-    len = data[pos];
-    if (data[pos + 1] != 0x03) {
+template <std::size_t SIZE>
+int get_string_descriptor(int pos, const std::array<uint8_t, SIZE>& data, std::string& str) {
+    const int len = data.at(pos);
+    if (data.at(pos + 1) != 0x03) {
         std::cout << "Error: invalid string descriptor!" << std::endl;
     }
+    int i;
     for (i = 2; i < len; i += 2) {
-        str[j++] = data[pos + i];
+        str.push_back(data.at(pos + i));
     }
-    str[j] = 0x00;
     return pos + i;
 }
 
@@ -144,7 +125,7 @@ void rtlsdr_callback(unsigned char* buf, uint32_t len, void* ctx) {
 int main(int argc, char* argv[]) {
     int enable_biastee = 0;
     uint32_t frequency = 100000000, samp_rate = 2048000;
-    int dev_index = 0;
+    std::optional<uint32_t> dev_index = 0;
     int dev_given = 0;
     int gain = 0;
     int ppm_error = 0;
@@ -212,60 +193,11 @@ int main(int argc, char* argv[]) {
         dev_index = verbose_device_search("0");
     }
 
-    if (dev_index < 0) {
+    if (!dev_index) {
         return 0;
     }
 
     rtlsdr_dev_t* dev = nullptr;
-
-    int r = rtlsdr_open(&dev, dev_index);
-    if (r < 0) {
-        std::cout << "Failed to open rtlsdr device #" << dev_index <<  "." << std::endl;
-        return 0;
-    }
-
-    std::array<uint8_t, 256> eeprom_buf;
-    r = rtlsdr_read_eeprom(dev, eeprom_buf.data(), 0, 256);
-	if (r < 0) {
-		if (r == -3) {
-            std::cout << "No EEPROM has been found." << std::endl;
-        } else {
-            std::cout << "Failed to read EEPROM, err " << r << "." << std::endl;
-        }
-        std::cout << "Close rtlsdr device #" << dev_index << "." << std::endl;
-        rtlsdr_close(dev);
-        return 0;
-	}
-
-	if ((eeprom_buf.at(0) != 0x28) || (eeprom_buf.at(1) != 0x32)) {
-		std::cout << "Error: invalid RTL2832 EEPROM header!" << std::endl;
-    } else {
-        const uint16_t vendor_id = eeprom_buf.at(2) | (eeprom_buf.at(3) << 8);
-        const uint16_t product_id = eeprom_buf.at(4) | (eeprom_buf.at(5) << 8);
-        const int have_serial = (eeprom_buf.at(6) == 0xa5) ? 1 : 0;
-        const bool direct_sampling_on = (eeprom_buf.at(7) & 0x01);
-        const bool enable_bt = (eeprom_buf.at(7) & 0x02);
-
-        std::array<char, 256> manufacturer;
-        int pos = get_string_descriptor(0x09, eeprom_buf.data(), manufacturer.data());
-        std::array<char, 256> product;    
-        pos = get_string_descriptor(pos, eeprom_buf.data(), product.data());
-        std::array<char, 256> serial;    
-        get_string_descriptor(pos, eeprom_buf.data(), serial.data());
-
-        std::cout << "Vendor ID:\t\t\t0x" << std::hex << vendor_id  << std::endl;
-        std::cout << "Product ID:\t\t\t0x" << std::hex << product_id  << std::endl;    
-        std::cout << "Manufacturer:\t\t\t" << manufacturer.data() << std::endl;    
-        std::cout << "Product:\t\t\t" << product.data() << std::endl;    
-        std::cout << "Serial number:\t\t\t" << serial.data() << std::endl;    
-        std::cout << "Serial number enabled:\t\t" << (have_serial ? "yes": "no") << std::endl;
-        std::cout << "Bias-T Always ON:\t\t" << (enable_bt ? "no": "yes") << std::endl;
-        std::cout << "Direct Sampling Always ON:\t" << (direct_sampling_on ? "yes": "no") << std::endl;
-        std::cout << std::dec;
-    }
-    
-    std::cout << "Close rtlsdr device #" << dev_index << "." << std::endl;
-    rtlsdr_close(dev);
 
     asio::io_context io_context;
     asio::ip::tcp::socket rtl_socket{io_context};
@@ -273,80 +205,92 @@ int main(int argc, char* argv[]) {
 #if defined(SIGQUIT)
     signals.add(SIGQUIT);
 #endif
-    std::atomic<uint16_t> flag_rtl{0};
     std::array<std::atomic_uint32_t, 14> cmd;
 
     uint8_t cmd_value = 0;
     uint32_t param_value = 0;
     std::array<asio::mutable_buffer, 2> cmd_buf{asio::buffer(&cmd_value, sizeof(cmd_value)), asio::buffer(&param_value, sizeof(param_value))};
 
+    std::function<void()> do_read;
     std::function<void()> do_accept;
-    std::function<void(const std::shared_ptr<std::thread>)> do_read;
 
     std::function<void(const unsigned char*, const uint32_t)> do_write = [&](const unsigned char* buf, const uint32_t len) {
-        static auto write_buffer(std::make_shared<asio::streambuf>());
         static bool write_ready = true;
         if (write_ready) {
             write_ready = false;
-            write_buffer->commit(asio::buffer_copy(write_buffer->prepare(len), asio::buffer(buf, len)));
-            asio::async_write(rtl_socket, *write_buffer, [](std::error_code /*ec*/, std::size_t length) {
-                write_buffer->consume(length);
-                write_ready = true;
-            });
+            static char* iq_buf = new char[DEFAULT_BUF_LENGTH];            
+            std::memcpy(iq_buf, buf, len);
+            asio::async_write(rtl_socket, asio::buffer(iq_buf, DEFAULT_BUF_LENGTH), [](auto, auto) { write_ready = true; });
         }
     };
 
-    do_read = [&](auto&& th) {
-        asio::async_read(rtl_socket, cmd_buf, [&, th](std::error_code ec, std::size_t /*length*/) {
-            if (!ec) {
-                const unsigned int index = cmd_value - 1;
-                if (index < 14) {
-                    flag_rtl.fetch_or(1 << index);
-                    cmd.at(index).store(param_value);
-                    flag_rtl.notify_one();
-                }
-                do_read(std::move(th));
-            } else {
-                rtlsdr_cancel_async(dev);
-                th->join();
-                std::cout << "all threads dead." << std::endl;
-                if (asio::error::operation_aborted != ec.value()) {
-                    do_accept();
-                }
-            }
-        });
-    };
+    std::atomic<uint16_t> flag_rtl{0};
+
+    uint32_t tuner_type = 0;
+    uint32_t tuner_gains = 0;
+    const std::array<asio::const_buffer, 3> rtl_buf{asio::buffer("RTL0", 4), asio::buffer(&tuner_type, 4), asio::buffer(&tuner_gains, 4)};
 
     do_accept = [&]() {
         const asio::ip::tcp::endpoint endpoint(asio::ip::address::from_string(addr), std::stoi(port));
         const auto rtl_acceptor(std::make_shared<asio::ip::tcp::acceptor>(io_context, endpoint));
         signals.cancel();
-        signals.async_wait([rtl_acceptor](std::error_code ec, int /*signal*/) {
+        signals.async_wait([rtl_acceptor](std::error_code ec, auto) {
             if (!ec) {
                 std::cout << "Signal caught, exiting!" << std::endl;
                 rtl_acceptor->close();
             }
         });
         std::cout << "listening..." << std::endl;
-        rtl_acceptor->async_accept([&, rtl_acceptor](std::error_code ec, asio::ip::tcp::socket socket) {
+        rtl_acceptor->async_accept([&](std::error_code ec, asio::ip::tcp::socket socket) {
             if (ec) {
                 return;
             }
             signals.cancel();
             std::cout << "client accepted! " << socket.remote_endpoint().address() << " " << socket.remote_endpoint().port() << std::endl;
             rtl_socket = std::move(socket);
-            signals.async_wait([&](std::error_code ec, int /*signal*/) {
+            signals.async_wait([&](std::error_code ec, auto) {
                 if (!ec) {
                     std::cout << "Signal caught, exiting!" << std::endl;
                     rtl_socket.close();
                 }
             });
-            rtlsdr_open(&dev, (uint32_t)dev_index);
-            if (NULL == dev) {
-                std::cout << "Failed to open rtlsdr device #" << dev_index << "." << std::endl;
+            rtlsdr_open(&dev, dev_index.value());
+            if (nullptr == dev) {
+                std::cout << "Failed to open rtlsdr device #" << dev_index.value() << "." << std::endl;
                 do_accept();
                 return;
             }
+
+            std::array<uint8_t, 256> eeprom_buf;
+            if (const int r = rtlsdr_read_eeprom(dev, eeprom_buf.data(), 0, 256); r < 0) {
+                if (r == -3) {
+                    std::cout << "No EEPROM has been found." << std::endl;
+                } else {
+                    std::cout << "Failed to read EEPROM, err " << r << "." << std::endl;
+                }
+            } else {
+                if ((eeprom_buf.at(0) != 0x28) || (eeprom_buf.at(1) != 0x32)) {
+                    std::cout << "Error: invalid RTL2832 EEPROM header!" << std::endl;
+                } else {
+                    std::string manufacturer;
+                    int pos = get_string_descriptor(0x09, eeprom_buf, manufacturer);
+                    std::string product;    
+                    pos = get_string_descriptor(pos, eeprom_buf, product);
+                    std::string serial;    
+                    get_string_descriptor(pos, eeprom_buf, serial);
+
+                    std::cout << "Vendor ID:\t\t\t0x" << std::hex << (eeprom_buf.at(2) | (eeprom_buf.at(3) << 8)) << std::endl;
+                    std::cout << "Product ID:\t\t\t0x" << std::hex << (eeprom_buf.at(4) | (eeprom_buf.at(5) << 8))  << std::endl;    
+                    std::cout << "Manufacturer:\t\t\t" << manufacturer << std::endl;    
+                    std::cout << "Product:\t\t\t" << product << std::endl;    
+                    std::cout << "Serial number:\t\t\t" << serial << std::endl;    
+                    std::cout << "Serial number enabled:\t\t" << ((eeprom_buf.at(6) == 0xa5) ? "yes": "no") << std::endl;
+                    std::cout << "Bias-T Always ON:\t\t" << ((eeprom_buf.at(7) & 0x02) ? "no": "yes") << std::endl;
+                    std::cout << "Direct Sampling Always ON:\t" << ((eeprom_buf.at(7) & 0x01) ? "yes": "no") << std::endl;
+                    std::cout << std::dec;
+                }
+            }
+
             if (ppm_error != 0) {
                 /* Set the tuner error */
                 int r = rtlsdr_set_freq_correction(dev, ppm_error);
@@ -356,14 +300,12 @@ int main(int argc, char* argv[]) {
             }
 
             /* Set the sample rate */
-            int r = rtlsdr_set_sample_rate(dev, samp_rate);
-            if (r < 0) {
+            if (const int r = rtlsdr_set_sample_rate(dev, samp_rate); r < 0) {
                 std::cout << "WARNING: Failed to set sample rate." << std::endl;
             }
 
             /* Set the frequency */
-            r = rtlsdr_set_center_freq(dev, frequency);
-            if (r < 0) {
+            if (const int r = rtlsdr_set_center_freq(dev, frequency); r < 0) {
                 std::cout << "WARNING: Failed to set center freq." << std::endl;
             } else {
                 std::cout << "Tuned to " << frequency << " Hz." << std::endl;
@@ -371,21 +313,17 @@ int main(int argc, char* argv[]) {
 
             if (0 == gain) {
                 /* Enable automatic gain */
-                r = rtlsdr_set_tuner_gain_mode(dev, 0);
-                if (r < 0) {
+                if (const int r = rtlsdr_set_tuner_gain_mode(dev, 0); r < 0) {
                     std::cout << "WARNING: Failed to enable automatic gain.\n"
                               << std::endl;
                 }
             } else {
                 /* Enable manual gain */
-                r = rtlsdr_set_tuner_gain_mode(dev, 1);
-                if (r < 0) {
+                if (const int r = rtlsdr_set_tuner_gain_mode(dev, 1); r < 0) {
                     std::cout << "WARNING: Failed to enable manual gain." << std::endl;
                 }
-
                 /* Set the tuner gain */
-                r = rtlsdr_set_tuner_gain(dev, gain);
-                if (r < 0) {
+                if (const int r = rtlsdr_set_tuner_gain(dev, gain); r < 0) {
                     std::cout << "WARNING: Failed to set tuner gain." << std::endl;
                 } else {
                     std::cout << "Tuner gain set to " << gain / 10.0 << "dB." << std::endl;
@@ -398,25 +336,22 @@ int main(int argc, char* argv[]) {
             }
 
             /* Reset endpoint before we start reading from it (mandatory) */
-            r = rtlsdr_reset_buffer(dev);
-            if (r < 0) {
+            if (const int r = rtlsdr_reset_buffer(dev); r < 0) {
                 std::cout << "WARNING: Failed to reset buffers." << std::endl;
             }
 
-            const uint32_t tuner_type = asio::detail::socket_ops::host_to_network_long(rtlsdr_get_tuner_type(dev));
-            const uint32_t tuner_gains = asio::detail::socket_ops::host_to_network_long(rtlsdr_get_tuner_gains(dev, NULL));
+            tuner_type = asio::detail::socket_ops::host_to_network_long(rtlsdr_get_tuner_type(dev));
+            tuner_gains = asio::detail::socket_ops::host_to_network_long(rtlsdr_get_tuner_gains(dev, nullptr));
 
-            const std::array<asio::const_buffer, 3> rtl_buf{asio::buffer("RTL0", 4), asio::buffer(&tuner_type, 4), asio::buffer(&tuner_gains, 4)};
-            const auto write_buffer(std::make_shared<asio::streambuf>());
-            write_buffer->commit(asio::buffer_copy(write_buffer->prepare(12), rtl_buf));
-            asio::async_write(rtl_socket, *write_buffer, [&, write_buffer](std::error_code ec, std::size_t /*length*/) {
+            asio::async_write(rtl_socket, rtl_buf, [&](std::error_code ec, auto) {
                 if (!ec) {
                     std::atomic<bool> flag_th(false);
-                    auto th(std::make_unique<std::thread>([&]() {
+                    static std::thread th;
+                    th = std::thread([&]() {
                         std::thread th = std::thread([&]() {
                             flag_th.store(true);
                             flag_th.notify_one();
-                            rtlsdr_read_async(dev, rtlsdr_callback, &do_write, buf_num, 0);
+                            rtlsdr_read_async(dev, rtlsdr_callback, &do_write, buf_num, DEFAULT_BUF_LENGTH);
                             flag_rtl.store(1 << 14);
                             flag_rtl.notify_one();
                         });
@@ -495,14 +430,33 @@ int main(int argc, char* argv[]) {
                             }
                             if (old & (1 << 14)) {
                                 th.join();
-                                std::cout << "Close rtlsdr device #" << dev_index << "." << std::endl;
+                                std::cout << "Close rtlsdr device #" << dev_index.value() << "." << std::endl;
                                 rtlsdr_close(dev);
                                 return;
                             }
                         }
-                    }));
+                    });
                     flag_th.wait(false);
-                    do_read(std::move(th));
+                    do_read = [&]() {
+                        asio::async_read(rtl_socket, cmd_buf, [&](std::error_code ec, auto) {
+                            if (!ec) {
+                                if (const unsigned int index = cmd_value - 1; index < 14) {
+                                    flag_rtl.fetch_or(1 << index);
+                                    cmd.at(index).store(param_value);
+                                    flag_rtl.notify_one();
+                                }
+                                do_read();
+                            } else {
+                                rtlsdr_cancel_async(dev);
+                                th.join();
+                                std::cout << "all threads dead." << std::endl;
+                                if (asio::error::operation_aborted != ec.value()) {
+                                    do_accept();
+                                }
+                            }
+                        });
+                    };                    
+                    do_read();
                 } else {
                     std::cout << "failed to send dongle information" << std::endl;
                     rtlsdr_close(dev);

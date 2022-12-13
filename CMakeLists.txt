@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.11)
+cmake_minimum_required(VERSION 3.11 FATAL_ERROR)
 project("rtl_asio")
 
 include(FetchContent)
